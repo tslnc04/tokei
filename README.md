@@ -10,6 +10,10 @@
 
 Tokei is a program that displays statistics about your code. Tokei will show the number of files, total lines within those files and code, comments, and blanks grouped by language.
 
+## Git Blame Fork
+
+This is a fork of [XAMPPRocky/tokei](https://github.com/XAMPPRocky/tokei) that adds git blame support. It is very much hacked on right now and does not properly handle sublanguages. It's also really slow. It breaks compatibility with the original tokei. So only use out of curiosity.
+
 ### Translations
 - [中文](https://github.com/chinanf-boy/tokei-zh#支持的语言)
 
@@ -587,5 +591,13 @@ please make your issues, and pull requests there.
 See [the graph](https://github.com/XAMPPRocky/tokei/graphs/contributors) for a full list of contributors.
 
 Tokei is distributed under the terms of both the MIT license and the Apache License (Version 2.0).
+
+See [LICENCE-APACHE](./LICENCE-APACHE), [LICENCE-MIT](./LICENCE-MIT) for more information.
+
+### Git Blame Fork
+
+Changes made by this fork are (C) Copyright 2024 Kirsten Laskoski.
+
+This fork of tokei is distributed under the terms of both the MIT license and the Apache License (Version 2.0).
 
 See [LICENCE-APACHE](./LICENCE-APACHE), [LICENCE-MIT](./LICENCE-MIT) for more information.

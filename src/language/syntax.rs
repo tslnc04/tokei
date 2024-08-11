@@ -7,10 +7,11 @@ use log::Level::Trace;
 use once_cell::sync::Lazy;
 
 use super::embedding::{
-    RegexCache, RegexFamily, ENDING_MARKDOWN_REGEX, ENDING_LF_BLOCK_REGEX, END_SCRIPT, END_STYLE, END_TEMPLATE
+    RegexCache, RegexFamily, ENDING_LF_BLOCK_REGEX, ENDING_MARKDOWN_REGEX, END_SCRIPT, END_STYLE,
+    END_TEMPLATE,
 };
-use crate::{stats::CodeStats, utils::ext::SliceExt, Config, LanguageType};
 use crate::LanguageType::LinguaFranca;
+use crate::{stats::CodeStats, utils::ext::SliceExt, Config, LanguageType};
 
 /// Tracks the syntax of the language as well as the current state in the file.
 /// Current has what could be consider three types of mode.
@@ -30,7 +31,7 @@ pub(crate) struct SyntaxCounter {
     pub(crate) quote_is_doc_quote: bool,
     pub(crate) stack: Vec<&'static str>,
     pub(crate) quote_is_verbatim: bool,
-    pub(crate) lf_embedded_language: Option<LanguageType>
+    pub(crate) lf_embedded_language: Option<LanguageType>,
 }
 
 #[derive(Clone, Debug)]
@@ -185,12 +186,19 @@ impl SyntaxCounter {
         &self,
         line: &[u8],
         stats: &mut crate::stats::CodeStats,
+        name: Option<&str>,
     ) -> bool {
         if !self.is_plain_mode() {
             false
         } else if line.trim().is_empty() {
             stats.blanks += 1;
             trace!("Blank No.{}", stats.blanks);
+
+            if let Some(name) = name {
+                let blame = stats.blame.entry(name.to_string()).or_default();
+                blame.blanks += 1;
+            }
+
             true
         } else if self.shared.important_syntax.is_match(line) {
             false
@@ -206,9 +214,19 @@ impl SyntaxCounter {
             {
                 stats.comments += 1;
                 trace!("Comment No.{}", stats.comments);
+
+                if let Some(name) = name {
+                    let blame = stats.blame.entry(name.to_string()).or_default();
+                    blame.comments += 1;
+                }
             } else {
                 stats.code += 1;
                 trace!("Code No.{}", stats.code);
+
+                if let Some(name) = name {
+                    let blame = stats.blame.entry(name.to_string()).or_default();
+                    blame.code += 1;
+                }
             }
 
             true
@@ -399,8 +417,11 @@ impl SyntaxCounter {
                     language,
                     String::from_utf8_lossy(&lines[start_of_code..end_of_code])
                 );
-                let stats =
-                    language.parse_from_slice(lines[start_of_code..end_of_code].trim(), config);
+                let stats = language.parse_from_slice(
+                    lines[start_of_code..end_of_code].trim(),
+                    config,
+                    None,
+                );
 
                 Some(FileContext::new(
                     LanguageContext::Markdown { balanced, language },
@@ -436,7 +457,8 @@ impl SyntaxCounter {
                 }
 
                 trace!("Markdown found: {:?}", String::from_utf8_lossy(&markdown));
-                let doc_block = LanguageType::Markdown.parse_from_slice(markdown.trim(), config);
+                let doc_block =
+                    LanguageType::Markdown.parse_from_slice(markdown.trim(), config, None);
 
                 Some(FileContext::new(
                     LanguageContext::Rust,
@@ -449,16 +471,15 @@ impl SyntaxCounter {
                 let start_of_code = opening_fence.end();
                 let closing_fence = ENDING_LF_BLOCK_REGEX.find(&lines[start_of_code..]);
                 let end_of_code = closing_fence
-                    .map_or_else(|| lines.len(),
-                                 |fence| start_of_code + fence.start());
+                    .map_or_else(|| lines.len(), |fence| start_of_code + fence.start());
 
                 let block_contents = &lines[start_of_code..end_of_code];
-                trace!(
-                    "LF block: {:?}",
-                    String::from_utf8_lossy(block_contents)
+                trace!("LF block: {:?}", String::from_utf8_lossy(block_contents));
+                let stats = self.get_lf_target_language().parse_from_slice(
+                    block_contents.trim_first_and_last_line_of_whitespace(),
+                    config,
+                    None,
                 );
-                let stats =
-                    self.get_lf_target_language().parse_from_slice(block_contents.trim_first_and_last_line_of_whitespace(), config);
                 trace!("-> stats: {:?}", stats);
 
                 Some(FileContext::new(
@@ -486,6 +507,7 @@ impl SyntaxCounter {
                     let stats = language.parse_from_slice(
                         script_contents.trim_first_and_last_line_of_whitespace(),
                         config,
+                        None,
                     );
                     Some(FileContext::new(
                         LanguageContext::Html { language },
@@ -513,6 +535,7 @@ impl SyntaxCounter {
                     let stats = language.parse_from_slice(
                         style_contents.trim_first_and_last_line_of_whitespace(),
                         config,
+                        None,
                     );
                     Some(FileContext::new(
                         LanguageContext::Html { language },
@@ -540,6 +563,7 @@ impl SyntaxCounter {
                     let stats = language.parse_from_slice(
                         template_contents.trim_first_and_last_line_of_whitespace(),
                         config,
+                        None,
                     );
                     Some(FileContext::new(
                         LanguageContext::Html { language },

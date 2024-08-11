@@ -15,6 +15,7 @@ use crate::{
 };
 
 use encoding_rs_io::DecodeReaderBytesBuilder;
+use git2::Repository;
 use grep_searcher::{LineIter, LineStep};
 use once_cell::sync::Lazy;
 use rayon::prelude::*;
@@ -26,8 +27,9 @@ include!(concat!(env!("OUT_DIR"), "/language_type.rs"));
 
 impl Serialize for LanguageType {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: serde::Serializer {
+    where
+        S: serde::Serializer,
+    {
         serializer.serialize_str(self.name())
     }
 }
@@ -50,20 +52,29 @@ impl LanguageType {
             s
         };
 
+        let repo = Repository::discover(path.clone())
+            .ok()
+            .map(|repo| (repo, path.clone()));
+
         let mut stats = Report::new(path);
 
-        stats += self.parse_from_slice(text, config);
+        stats += self.parse_from_slice(text, config, repo);
 
         Ok(stats)
     }
 
     /// Parses the text provided as the given [`LanguageType`].
     pub fn parse_from_str<A: AsRef<str>>(self, text: A, config: &Config) -> CodeStats {
-        self.parse_from_slice(text.as_ref().as_bytes(), config)
+        self.parse_from_slice(text.as_ref().as_bytes(), config, None)
     }
 
     /// Parses the bytes provided as the given [`LanguageType`].
-    pub fn parse_from_slice<A: AsRef<[u8]>>(self, text: A, config: &Config) -> CodeStats {
+    pub fn parse_from_slice<A: AsRef<[u8]>>(
+        self,
+        text: A,
+        config: &Config,
+        repo: Option<(Repository, PathBuf)>,
+    ) -> CodeStats {
         let text = text.as_ref();
 
         if self == Jupyter {
@@ -80,21 +91,16 @@ impl LanguageType {
             syntax_mut
         };
 
-        if let Some(end) = syntax
-            .shared
-            .important_syntax
-            .find(text)
-            .and_then(|m| {
-                // Get the position of the last line before the important
-                // syntax.
-                text[..=m.start()]
-                    .iter()
-                    .rev()
-                    .position(|&c| c == b'\n')
-                    .filter(|&p| p != 0)
-                    .map(|p| m.start() - p)
-            })
-        {
+        if let Some(end) = syntax.shared.important_syntax.find(text).and_then(|m| {
+            // Get the position of the last line before the important
+            // syntax.
+            text[..=m.start()]
+                .iter()
+                .rev()
+                .position(|&c| c == b'\n')
+                .filter(|&p| p != 0)
+                .map(|p| m.start() - p)
+        }) {
             let (skippable_text, rest) = text.split_at(end + 1);
             let is_fortran = syntax.shared.is_fortran;
             let is_literate = syntax.shared.is_literate;
@@ -103,7 +109,8 @@ impl LanguageType {
                 "Using Simple Parse on {:?}",
                 String::from_utf8_lossy(skippable_text)
             );
-            let parse_lines = move || self.parse_lines(config, rest, CodeStats::new(), syntax);
+            let parse_lines =
+                move || self.parse_lines(config, rest, CodeStats::new(), syntax, repo);
             let simple_parse = move || {
                 LineIter::new(b'\n', skippable_text)
                     .par_bridge()
@@ -132,7 +139,7 @@ impl LanguageType {
             stats.comments += comments;
             stats
         } else {
-            self.parse_lines(config, text, CodeStats::new(), syntax)
+            self.parse_lines(config, text, CodeStats::new(), syntax, repo)
         }
     }
 
@@ -143,10 +150,32 @@ impl LanguageType {
         lines: &[u8],
         mut stats: CodeStats,
         mut syntax: SyntaxCounter,
+        repo: Option<(Repository, PathBuf)>,
     ) -> CodeStats {
         let mut stepper = LineStep::new(b'\n', 0, lines.len());
+        let blame = repo.as_ref().and_then(|(repo, path)| {
+            match repo.blame_file(path.strip_prefix("./").unwrap(), None) {
+                Ok(blame) => Some(blame),
+                Err(e) => {
+                    error!("error blaming {}: {}", path.display(), e);
+                    None
+                }
+            }
+        });
+
+        let mut lineno = 0;
 
         while let Some((start, end)) = stepper.next(lines) {
+            lineno += 1;
+            let name = blame
+                .as_ref()
+                .and_then(|blame| blame.get_line(lineno))
+                .as_ref()
+                .map(|hunk| hunk.final_signature())
+                .as_ref()
+                .and_then(|sig| sig.name())
+                .map(|name| name.to_string());
+
             let line = &lines[start..end];
             // FORTRAN has a rule where it only counts as a comment if it's the
             // first character in the column, so removing starting whitespace
@@ -158,7 +187,7 @@ impl LanguageType {
             };
             trace!("{}", String::from_utf8_lossy(line));
 
-            if syntax.try_perform_single_line_analysis(line, &mut stats) {
+            if syntax.try_perform_single_line_analysis(line, &mut stats, name.as_deref()) {
                 continue;
             }
 
@@ -209,9 +238,19 @@ impl LanguageType {
                 stats.comments += 1;
                 trace!("Comment No.{}", stats.comments);
                 trace!("Was the Comment stack empty?: {}", !started_in_comments);
+
+                if let Some(name) = name {
+                    let blame = stats.blame.entry(name).or_default();
+                    blame.comments += 1;
+                }
             } else {
                 stats.code += 1;
                 trace!("Code No.{}", stats.code);
+
+                if let Some(name) = name {
+                    let blame = stats.blame.entry(name).or_default();
+                    blame.code += 1;
+                }
             }
         }
 
@@ -291,22 +330,22 @@ impl LanguageType {
     /// This is the first thing in the file (although there may be comments before).
     fn find_lf_target_language(&self, bytes: &[u8]) -> Option<LanguageType> {
         use regex::bytes::Regex;
-        static LF_TARGET_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?m)\btarget\s+(\w+)\s*($|;|\{)"#).unwrap());
-        LF_TARGET_REGEX.captures(bytes)
-            .and_then(|captures| {
-                let name = captures.get(1).unwrap().as_bytes();
-                if name == b"CCpp" {
-                    // this is a special alias for the C target in LF
-                    Some(C)
-                } else {
-                    let name_str = &String::from_utf8_lossy(name);
-                    let by_name = LanguageType::from_name(&name_str);
-                    if by_name.is_none() {
-                        trace!("LF target not recognized: {}", name_str);
-                    }
-                    by_name
+        static LF_TARGET_REGEX: Lazy<Regex> =
+            Lazy::new(|| Regex::new(r#"(?m)\btarget\s+(\w+)\s*($|;|\{)"#).unwrap());
+        LF_TARGET_REGEX.captures(bytes).and_then(|captures| {
+            let name = captures.get(1).unwrap().as_bytes();
+            if name == b"CCpp" {
+                // this is a special alias for the C target in LF
+                Some(C)
+            } else {
+                let name_str = &String::from_utf8_lossy(name);
+                let by_name = LanguageType::from_name(&name_str);
+                if by_name.is_none() {
+                    trace!("LF target not recognized: {}", name_str);
                 }
-            })
+                by_name
+            }
+        })
     }
 }
 
@@ -321,11 +360,14 @@ mod tests {
         assert!(LanguageType::Rust.allows_nested());
     }
 
-
     fn assert_stats(stats: &CodeStats, blanks: usize, code: usize, comments: usize) {
         assert_eq!(stats.blanks, blanks, "expected {} blank lines", blanks);
         assert_eq!(stats.code, code, "expected {} code lines", code);
-        assert_eq!(stats.comments, comments, "expected {} comment lines", comments);
+        assert_eq!(
+            stats.comments, comments,
+            "expected {} comment lines",
+            comments
+        );
     }
 
     #[test]
@@ -345,8 +387,7 @@ mod tests {
         let file_text =
             fs::read_to_string(Path::new("tests").join("data").join("linguafranca.lf")).unwrap();
 
-        let stats = LinguaFranca
-            .parse_from_str(file_text, &Config::default());
+        let stats = LinguaFranca.parse_from_str(file_text, &Config::default());
 
         assert_stats(&stats, 9, 11, 8);
 

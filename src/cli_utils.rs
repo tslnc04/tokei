@@ -318,6 +318,24 @@ impl<W: Write> Printer<W> {
         Ok(())
     }
 
+    fn print_blame(&mut self, language: &Language) -> io::Result<()> {
+        for (name, blame) in &language.blame {
+            self.print_language_name(false, name, Some(" |-"))?;
+
+            writeln!(
+                self.writer,
+                " {:>FILES_COLUMN_WIDTH$} {:>LINES_COLUMN_WIDTH$} {:>CODE_COLUMN_WIDTH$} {:>COMMENTS_COLUMN_WIDTH$} {:>BLANKS_COLUMN_WIDTH$}",
+                1,
+                (blame.code + blame.comments + blame.blanks).to_formatted_string(&self.number_format),
+                blame.code.to_formatted_string(&self.number_format),
+                blame.comments.to_formatted_string(&self.number_format),
+                blame.blanks.to_formatted_string(&self.number_format),
+            )?;
+        }
+
+        Ok(())
+    }
+
     pub fn print_results<'a, I>(
         &mut self,
         languages: I,
@@ -335,13 +353,17 @@ impl<W: Write> Printer<W> {
         for languages in &[&a, &b] {
             for &(name, language) in *languages {
                 let has_children = !(compact || language.children.is_empty());
+                let has_blame = !(compact || language.blame.is_empty());
                 if first {
                     first = false;
-                } else if has_children || self.list_files {
+                } else if has_children || has_blame || self.list_files {
                     self.print_subrow()?;
                 }
 
                 self.print_language(language, name.name())?;
+                if has_blame {
+                    self.print_blame(language)?;
+                }
                 if has_children {
                     self.print_language_total(language)?;
                 }

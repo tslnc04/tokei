@@ -4,6 +4,30 @@ use crate::consts::{
 use crate::LanguageType;
 use std::{collections::BTreeMap, fmt, ops, path::PathBuf};
 
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+#[non_exhaustive]
+pub struct BlameStats {
+    pub blanks: usize,
+    pub code: usize,
+    pub comments: usize,
+}
+
+impl ops::AddAssign for BlameStats {
+    fn add_assign(&mut self, rhs: Self) {
+        self.blanks += rhs.blanks;
+        self.code += rhs.code;
+        self.comments += rhs.comments;
+    }
+}
+
+impl ops::AddAssign<&'_ BlameStats> for BlameStats {
+    fn add_assign(&mut self, rhs: &'_ BlameStats) {
+        self.blanks += rhs.blanks;
+        self.code += rhs.code;
+        self.comments += rhs.comments;
+    }
+}
+
 /// A struct representing stats about a single blob of code.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 #[non_exhaustive]
@@ -16,6 +40,8 @@ pub struct CodeStats {
     pub comments: usize,
     /// Language blobs that were contained inside this blob.
     pub blobs: BTreeMap<LanguageType, CodeStats>,
+    /// Blame stats for the blob per name.
+    pub blame: BTreeMap<String, BlameStats>,
 }
 
 impl CodeStats {
@@ -43,6 +69,10 @@ impl CodeStats {
             summary.blanks += child_summary.blanks;
             summary.comments += child_summary.comments;
             summary.code += child_summary.code;
+
+            for (name, blame) in child_summary.blame {
+                *summary.blame.entry(name).or_default() += blame;
+            }
         }
 
         summary
@@ -63,6 +93,10 @@ impl ops::AddAssign<&'_ CodeStats> for CodeStats {
 
         for (language, stats) in &rhs.blobs {
             *self.blobs.entry(*language).or_default() += stats;
+        }
+
+        for (name, blame) in &rhs.blame {
+            *self.blame.entry(name.clone()).or_default() += blame;
         }
     }
 }

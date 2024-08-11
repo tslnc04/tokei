@@ -7,7 +7,10 @@ use std::{collections::BTreeMap, mem, ops::AddAssign};
 
 pub use self::{language_type::*, languages::Languages};
 
-use crate::{sort::Sort, stats::Report};
+use crate::{
+    sort::Sort,
+    stats::{BlameStats, Report},
+};
 
 /// A struct representing statistics about a single Language.
 #[derive(Clone, Debug, Deserialize, Default, PartialEq, Serialize)]
@@ -24,6 +27,8 @@ pub struct Language {
     pub children: BTreeMap<LanguageType, Vec<Report>>,
     /// Whether this language had problems with file parsing
     pub inaccurate: bool,
+    /// Blame stats for the blob per name.
+    pub blame: BTreeMap<String, BlameStats>,
 }
 
 impl Language {
@@ -77,6 +82,10 @@ impl Language {
                 summary.comments += stats.comments;
                 summary.code += stats.code;
                 summary.blanks += stats.blanks;
+
+                for (name, blame) in stats.blame {
+                    *summary.blame.entry(name).or_default() += blame;
+                }
             }
         }
 
@@ -104,16 +113,25 @@ impl Language {
         let mut blanks = 0;
         let mut code = 0;
         let mut comments = 0;
+        let mut blame: BTreeMap<String, BlameStats> = BTreeMap::new();
 
         for report in &self.reports {
             blanks += report.stats.blanks;
             code += report.stats.code;
             comments += report.stats.comments;
+
+            for (name, report_blame) in &report.stats.blame {
+                *blame.entry(name.to_string()).or_default() += report_blame;
+            }
         }
 
         self.blanks = blanks;
         self.code = code;
         self.comments = comments;
+
+        for (name, blame) in blame {
+            *self.blame.entry(name).or_default() += blame;
+        }
     }
 
     /// Checks if the language is empty. Empty meaning it doesn't have any
